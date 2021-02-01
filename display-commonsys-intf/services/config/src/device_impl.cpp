@@ -101,6 +101,8 @@ Return<void> DeviceImpl::registerClient(const hidl_string &client_name,
 
   device_client->SetDeviceConfigIntf(intf);
 
+  std::lock_guard<std::mutex> lock(death_service_mutex_);
+  ALOGI("Register client name: %s device client: %p", client_name.c_str(), device_client.get());
   display_config_map_.emplace(std::make_pair(client_handle, device_client));
   _hidl_cb(error, client_handle);
   return Void();
@@ -115,6 +117,7 @@ void DeviceImpl::serviceDied(uint64_t client_handle,
     ConfigInterface *intf = client->GetDeviceConfigIntf();
     intf_->UnRegisterClientContext(intf);
     client.reset();
+    ALOGW("Client id:%lu service died", client_handle);
     display_config_map_.erase(itr);
   }
 }
@@ -819,6 +822,37 @@ void DeviceImpl::DeviceClientContext::ParseIsRCSupported(const ByteStream &input
   _hidl_cb(error, output_params, {});
 }
 
+void DeviceImpl::DeviceClientContext::ParseIsSupportedConfigSwitch(const ByteStream &input_params,
+                                                                 perform_cb _hidl_cb) {
+  if (!intf_) {
+    _hidl_cb(-EINVAL, {}, {});
+    return;
+  }
+
+  const struct SupportedModesParams *supported_modes_data;
+  const uint8_t *data = input_params.data();
+  bool supported = false;
+  ByteStream output_params;
+  supported_modes_data = reinterpret_cast<const SupportedModesParams*>(data);
+
+  int32_t error = intf_->IsSupportedConfigSwitch(supported_modes_data->disp_id,
+                                               supported_modes_data->mode, &supported);
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&supported), sizeof(bool));
+  _hidl_cb(error, output_params, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseGetDisplayType(const ByteStream &input_params,
+                                                          perform_cb _hidl_cb) {
+  const uint8_t *data = input_params.data();
+  const uint64_t *physical_disp_id = reinterpret_cast<const uint64_t*>(data);
+  DisplayType disp_type = DisplayConfig::DisplayType::kInvalid;
+  int32_t error = intf_->GetDisplayType(*physical_disp_id, &disp_type);
+  ByteStream output_params;
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&disp_type), sizeof(DisplayType));
+
+  _hidl_cb(error, output_params, {});
+}
+
 Return<void> DeviceImpl::perform(uint64_t client_handle, uint32_t op_code,
                                  const ByteStream &input_params, const HandleStream &input_handles,
                                  perform_cb _hidl_cb) {
@@ -980,6 +1014,12 @@ Return<void> DeviceImpl::perform(uint64_t client_handle, uint32_t op_code,
       break;
     case kIsRCSupported:
       client->ParseIsRCSupported(input_params, _hidl_cb);
+      break;
+    case kIsSupportedConfigSwitch:
+      client->ParseIsSupportedConfigSwitch(input_params, _hidl_cb);
+      break;
+    case kGetDisplayType:
+      client->ParseGetDisplayType(input_params, _hidl_cb);
       break;
     default:
       _hidl_cb(-EINVAL, {}, {});
